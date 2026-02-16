@@ -1,1 +1,148 @@
-hitbox expander for zombie
+--// 載入 Rayfield UI 庫
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+--// 建立主視窗
+local Window = Rayfield:CreateWindow({
+   Name = "🧟 近戰特化平滑擴大器",
+   LoadingTitle = "載入腳本中...",
+   LoadingSubtitle = "by Rayfield",
+   ConfigurationSaving = { Enabled = false },
+   Discord = { Enabled = false },
+   KeySystem = false
+})
+
+--// 建立分頁
+local Tab = Window:CreateTab("主要控制", 4483362458)
+
+--// 服務與全域變數
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+-- 【近戰特化預設值】
+_G.HitboxEnabled = false
+_G.MaxHitboxSize = 15     -- 遠距離依然保持 15 的大頭
+_G.MinHitboxSize = 4.5    -- 【修改】貼臉時的最小尺寸調大 (原本是 2，現在是 4.5，隨便砍都中)
+_G.MaxDistance = 35       -- 【修改】距離 35 以內才開始慢慢縮小 (延後縮小時間)
+_G.MinDistance = 4        -- 【修改】直到距離 4 (揮刀極限距離) 才會縮到最小
+_G.HitboxTransparency = 0.5
+
+--// 恢復預設大小的函數
+local function ResetHitboxes()
+    local zombies = game.Workspace:FindFirstChild("Zombies")
+    if zombies then
+        for _, zombie in pairs(zombies:GetChildren()) do
+            if zombie:IsA("Model") and zombie:FindFirstChild("Head") then
+                local head = zombie.Head
+                head.Size = Vector3.new(1.2, 1.2, 1.2)
+                head.Transparency = 0
+                head.CanCollide = true
+            end
+        end
+    end
+end
+
+--// 基礎開關與設定
+Tab:CreateToggle({
+   Name = "啟動平滑縮放 (實時演算)",
+   CurrentValue = false,
+   Flag = "HitboxToggle",
+   Callback = function(Value) 
+      _G.HitboxEnabled = Value 
+      if not Value then ResetHitboxes() end
+   end,
+})
+
+Tab:CreateLabel("=== 尺寸設定 (Size) ===")
+
+Tab:CreateSlider({
+   Name = "最遠時的【最大尺寸】",
+   Range = {5, 50},
+   Increment = 1,
+   Suffix = "Studs",
+   CurrentValue = 15,
+   Flag = "MaxSizeSlider",
+   Callback = function(Value) _G.MaxHitboxSize = Value end,
+})
+
+Tab:CreateSlider({
+   Name = "貼臉時的【最小尺寸】 (近戰看這裡)",
+   Range = {1, 15},
+   Increment = 0.5,
+   Suffix = "Studs",
+   CurrentValue = 4.5, -- 預設給近戰舒服的尺寸
+   Flag = "MinSizeSlider",
+   Callback = function(Value) _G.MinHitboxSize = Value end,
+})
+
+Tab:CreateLabel("=== 距離閾值 (時機調整) ===")
+
+Tab:CreateSlider({
+   Name = "距離上限 (低於此距離才開始縮小)",
+   Range = {10, 300},
+   Increment = 5,
+   Suffix = "Studs",
+   CurrentValue = 35, -- 靠近到 35 才開始縮
+   Flag = "MaxDistSlider",
+   Callback = function(Value) _G.MaxDistance = Value end,
+})
+
+Tab:CreateSlider({
+   Name = "安全距離 (揮刀距離，到達後不再縮小)",
+   Range = {2, 50},
+   Increment = 1,
+   Suffix = "Studs",
+   CurrentValue = 4, -- 揮刀極限範圍
+   Flag = "MinDistSlider",
+   Callback = function(Value) _G.MinDistance = Value end,
+})
+
+Tab:CreateLabel("=== 其他外觀 ===")
+
+Tab:CreateSlider({
+   Name = "透明度 (Transparency)",
+   Range = {0, 1},
+   Increment = 0.1,
+   Suffix = "",
+   CurrentValue = 0.5,
+   Flag = "HitboxTransSlider",
+   Callback = function(Value) _G.HitboxTransparency = Value end,
+})
+
+Tab:CreateButton({
+   Name = "強制重置所有殭屍頭部",
+   Callback = function()
+      _G.HitboxEnabled = false
+      Rayfield:Notify({Title = "已重置", Content = "功能已關閉並恢復原狀", Duration = 2, Image = 4483362458})
+   end,
+})
+
+--// 核心實時平滑演算迴圈
+RunService.Heartbeat:Connect(function()
+    if not _G.HitboxEnabled then return end
+    
+    local zombies = game.Workspace:FindFirstChild("Zombies")
+    local character = LocalPlayer.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    
+    if zombies and hrp then
+        for _, zombie in pairs(zombies:GetChildren()) do
+            if zombie:IsA("Model") and zombie:FindFirstChild("Head") then
+                local head = zombie.Head
+                local zombieRoot = zombie:FindFirstChild("HumanoidRootPart") or head
+                local distance = (hrp.Position - zombieRoot.Position).Magnitude
+                
+                -- 防呆：確保 MaxDistance 大於 MinDistance
+                local realMaxDist = math.max(_G.MaxDistance, _G.MinDistance + 1)
+                
+                local clampedDistance = math.clamp(distance, _G.MinDistance, realMaxDist)
+                local distanceRatio = (clampedDistance - _G.MinDistance) / (realMaxDist - _G.MinDistance)
+                local targetSize = _G.MinHitboxSize + distanceRatio * (_G.MaxHitboxSize - _G.MinHitboxSize)
+                
+                head.Size = Vector3.new(targetSize, targetSize, targetSize)
+                head.Transparency = _G.HitboxTransparency
+                head.CanCollide = false
+            end
+        end
+    end
+end)
