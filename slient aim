@@ -4,40 +4,33 @@ _G.FOV = 150
 _G.VisibleCheck = true
 _G.TeamCheck = true
 _G.TeamCheckForNPCs = false
-_G.Prediction = 0 -- 針對 The Border 設為 0 (無預判，即時命中最準)
-_G.UpdateRate = 0.01 -- 極致刷新率
-_G.TargetMode = "Players" -- 預設只鎖定玩家，大幅降低卡頓
-_G.AimPart = "Head" -- "Head", "Torso", "Both", "Random"
-_G.ShowTarget = true -- 顯示目標資訊
-_G.HitChance = 100 -- 命中機率 (1-100%)
-_G.BulletTeleport = false -- 子彈傳送到目標
-_G.ShowTargetName = true -- 顯示目標名稱
-_G.ShowTargetType = true -- 顯示類型 (NPC/玩家)
-_G.ShowTargetHP = true -- 顯示目標血量
-_G.ShowTargetDistance = true -- 顯示距離
-_G.ShowHitChance = true -- 顯示命中機率
-_G.HighlightTarget = false -- 高亮目標
-_G.DebugNPCs = false -- 在控制台顯示偵測到的 NPC
-_G.AggressiveNPCDetection = false -- 激進模式：預設關閉
-_G.InstantInteract = false -- [新增] 瞬間互動開關
+_G.Prediction = 0 
+_G.UpdateRate = 0.01 
+_G.TargetMode = "Players" 
+_G.AimPart = "Head" 
+_G.ShowTarget = true 
+_G.HitChance = 100 
+_G.BulletTeleport = false 
+_G.ShowTargetName = true 
+_G.ShowTargetType = true 
+_G.ShowTargetHP = true 
+_G.ShowTargetDistance = true 
+_G.ShowHitChance = true 
+_G.HighlightTarget = false 
+_G.DebugNPCs = false 
+_G.AggressiveNPCDetection = false 
+_G.InstantInteract = false 
 
 --// 新設定 (優先級)
-_G.TargetPriority = "Crosshair" -- 預設為準星優先，適合人群中點名
-_G.StickyAim = true -- 若為 true，鎖定目標直到死亡或離開 FOV (防止抖動)
+_G.TargetPriority = "Crosshair" 
+_G.StickyAim = true 
 
 --// 防踢保護 (自動啟用)
 task.spawn(function()
     for k, v in pairs(getgc(true)) do
-        if pcall(function()
-            return rawget(v, "indexInstance")
-        end) and type(rawget(v, "indexInstance")) == "table" and (rawget(v, "indexInstance"))[1] == "kick" then
+        if pcall(function() return rawget(v, "indexInstance") end) and type(rawget(v, "indexInstance")) == "table" and (rawget(v, "indexInstance"))[1] == "kick" then
             setreadonly(v, false)
-            v.tvk = {
-                "kick",
-                function()
-                    return game.Workspace:WaitForChild("")
-                end
-            }
+            v.tvk = {"kick", function() return game.Workspace:WaitForChild("") end}
         end
     end
 end)
@@ -47,80 +40,44 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
-local HttpService = game:GetService("HttpService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
-local ProximityPromptService = game:GetService("ProximityPromptService") -- [新增] 互動服務
+local ProximityPromptService = game:GetService("ProximityPromptService") 
 local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
 
 --// 瞬間互動邏輯 (Instant Interact)
-ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt, player)
-    if _G.InstantInteract then
-        fireproximityprompt(prompt)
-    end
+ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt)
+    if _G.InstantInteract then fireproximityprompt(prompt) end
 end)
 
---// FOV 圓圈
+--// FOV 圓圈與 UI 變數
 local Circle = Drawing.new("Circle")
-Circle.Color = Color3.fromRGB(0, 255, 0)
-Circle.Thickness = 2
-Circle.Visible = false
-Circle.Radius = _G.FOV
-Circle.Transparency = 0.7
-Circle.Filled = false
+Circle.Color = Color3.fromRGB(0, 255, 0); Circle.Thickness = 2; Circle.Visible = false; Circle.Radius = _G.FOV; Circle.Transparency = 0.7; Circle.Filled = false
 
---// 目標資訊 (文字)
 local TargetInfo = Drawing.new("Text")
-TargetInfo.Visible = false
-TargetInfo.Color = Color3.fromRGB(255, 255, 255)
-TargetInfo.Size = 18
-TargetInfo.Font = 2
-TargetInfo.Outline = true
-TargetInfo.OutlineColor = Color3.fromRGB(0, 0, 0)
-TargetInfo.Text = ""
+TargetInfo.Visible = false; TargetInfo.Color = Color3.fromRGB(255, 255, 255); TargetInfo.Size = 18; TargetInfo.Font = 2; TargetInfo.Outline = true; TargetInfo.OutlineColor = Color3.fromRGB(0, 0, 0)
 
---// 高亮目標
-local TargetHighlight = nil
-local HighlightConnection = nil
+local TargetHighlight, HighlightConnection = nil, nil
+local CurrentTarget, TargetPart, TargetInRange = nil, nil, false
+local NPCCache, PlayerCache = {}, {}
+local LastCacheUpdate, CacheUpdateInterval = 0, 0.5
+local oldNamecall, oldIndex = nil, nil
 
---// 變數
-local CurrentTarget = nil
-local TargetPart = nil
-local TargetInRange = false
-local NPCCache = {}
-local PlayerCache = {}
-local LastCacheUpdate = 0
-local CacheUpdateInterval = 0.5 -- 縮短快取間隔
-
---// HOOKS 變數
-local oldNamecall = nil
-local oldIndex = nil
-
---// 函數：創建高亮
+--// 函數：創建與更新高亮
 local function CreateHighlight(target)
     if not target or not target:IsA("Model") then return nil end
     if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
     if HighlightConnection then HighlightConnection:Disconnect(); HighlightConnection = nil end
-    
+
     local highlight = Instance.new("Highlight")
-    highlight.Name = "SilentAimHighlight"
-    highlight.Adornee = target
-    highlight.FillColor = Color3.fromRGB(255, 50, 50)
-    highlight.FillTransparency = 0.7
-    highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
-    highlight.OutlineTransparency = 0
-    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    highlight.Parent = game:GetService("CoreGui")
-    
-    HighlightConnection = target.Destroying:Connect(function()
-        if highlight then highlight:Destroy(); TargetHighlight = nil end
-    end)
+    highlight.Name = "SilentAimHighlight"; highlight.Adornee = target; highlight.FillColor = Color3.fromRGB(255, 50, 50); highlight.FillTransparency = 0.7; highlight.OutlineColor = Color3.fromRGB(255, 255, 255); highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop; highlight.Parent = game:GetService("CoreGui")
+
+    HighlightConnection = target.Destroying:Connect(function() if highlight then highlight:Destroy(); TargetHighlight = nil end end)
     return highlight
 end
 
---// 函數：更新高亮
 local function UpdateHighlight()
     if not _G.HighlightTarget then
         if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
@@ -128,19 +85,12 @@ local function UpdateHighlight()
         return
     end
     if CurrentTarget then
-        if not TargetHighlight or TargetHighlight.Adornee ~= CurrentTarget then
-            TargetHighlight = CreateHighlight(CurrentTarget)
-        end
+        if not TargetHighlight or TargetHighlight.Adornee ~= CurrentTarget then TargetHighlight = CreateHighlight(CurrentTarget) end
         if TargetHighlight then
             local isPlayer = false
             for _, data in pairs(PlayerCache) do if data.Model == CurrentTarget then isPlayer = true; break end end
             TargetHighlight.FillColor = isPlayer and Color3.fromRGB(50, 150, 255) or Color3.fromRGB(255, 50, 50)
-            if _G.HitChance >= 80 then
-                local pulse = math.sin(tick() * 3) * 0.2 + 0.8
-                TargetHighlight.FillTransparency = 0.7 + (0.2 * (1 - pulse))
-            else
-                TargetHighlight.FillTransparency = 0.7
-            end
+            TargetHighlight.FillTransparency = _G.HitChance >= 80 and (0.7 + (0.2 * (1 - (math.sin(tick() * 3) * 0.2 + 0.8)))) or 0.7
         end
     else
         if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
@@ -148,304 +98,204 @@ local function UpdateHighlight()
     end
 end
 
---// 函數：僅清理 UI
 local function CleanupUIOnly()
     if Circle then Circle.Visible = false end
     if TargetInfo then TargetInfo.Visible = false; TargetInfo.Text = "" end
     if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
     if HighlightConnection then HighlightConnection:Disconnect(); HighlightConnection = nil end
-    CurrentTarget = nil; TargetPart = nil; TargetInRange = false
-    NPCCache = {}; PlayerCache = {}
+    CurrentTarget, TargetPart, TargetInRange = nil, nil, false
+    NPCCache, PlayerCache = {}, {}
 end
 
---// NPC 標籤列表
-local NPCTags = {
-    "NPC", "Npc", "npc", "Enemy", "enemy", "Enemies", "enemies",
-    "Hostile", "hostile", "Bad", "bad", "BadGuy", "badguy",
-    "Foe", "foe", "Opponent", "opponent", "Bot", "bot", "Bots", "bots",
-    "Mob", "mob", "Mobs", "mobs", "Monster", "monster", "Monsters", "monsters",
-    "Zombie", "zombie", "Zombies", "zombies", "Creature", "creature", "Animal", "animal", "Beast", "beast",
-    "Villain", "villain", "Villian", "villian", "Boss", "boss", "MiniBoss", "miniboss",
-    "Guard", "guard", "Guardian", "guardian", "Soldier", "soldier", "Warrior", "warrior",
-    "Fighter", "fighter", "Target", "target", "Dummy", "dummy", "Dummies", "dummies",
-    "Practice", "practice", "Training", "training", "Skeleton", "skeleton",
-    "Orc", "orc", "Goblin", "goblin", "Troll", "troll", "Ogre", "ogre",
-    "Demon", "demon", "Devil", "devil", "Ghost", "ghost", "Spirit", "spirit",
-    "Vampire", "vampire", "Werewolf", "werewolf", "Dragon", "dragon", "Wyvern", "wyvern",
-    "Gang", "gang", "Thug", "thug", "Bandit", "bandit", "Raider", "raider",
-    "Pirate", "pirate", "Corsair", "corsair", "Agent", "agent", "Assassin", "assassin",
-    "Mercenary", "mercenary", "Hunter", "hunter", "Robot", "robot", "Drone", "drone",
-    "Android", "android", "Cyborg", "cyborg", "Automaton", "automaton",
-    "Servant", "servant", "Minion", "minion", "Slave", "slave", "Pawn", "pawn",
-    "AI", "ai", "A.I.", "Char", "char", "Character", "character", "Model", "model",
-    "Event", "event", "Special", "special", "Holiday", "holiday", "Seasonal", "seasonal",
-}
-
---// 函數：偵錯 NPC
-local function DebugNPCDetection(character, reason)
-    if not _G.DebugNPCs then return end
-    print("[NPC DEBUG] 偵測到:", character.Name)
-    print("  原因:", reason)
+--// NPC 標籤與偵測
+local NPCTags = {"NPC", "Npc", "npc", "Enemy", "enemy", "Enemies", "enemies", "Hostile", "hostile", "Bad", "bad", "BadGuy", "badguy", "Foe", "foe", "Opponent", "opponent", "Bot", "bot", "Bots", "bots", "Mob", "mob", "Mobs", "mobs", "Monster", "monster", "Monsters", "monsters", "Zombie", "zombie", "Zombies", "zombies", "Creature", "creature", "Animal", "animal", "Beast", "beast", "Villain", "villain", "Villian", "villian", "Boss", "boss", "MiniBoss", "miniboss", "Guard", "guard", "Guardian", "guardian", "Soldier", "soldier", "Warrior", "warrior", "Fighter", "fighter", "Target", "target", "Dummy", "dummy", "Dummies", "dummies", "Practice", "practice", "Training", "training", "Skeleton", "skeleton", "Orc", "orc", "Goblin", "goblin", "Troll", "troll", "Ogre", "ogre", "Demon", "demon", "Devil", "devil", "Ghost", "ghost", "Spirit", "spirit", "Vampire", "vampire", "Werewolf", "werewolf", "Dragon", "dragon", "Wyvern", "wyvern", "Gang", "gang", "Thug", "thug", "Bandit", "bandit", "Raider", "raider", "Pirate", "pirate", "Corsair", "corsair", "Agent", "agent", "Assassin", "assassin", "Mercenary", "mercenary", "Hunter", "hunter", "Robot", "robot", "Drone", "drone", "Android", "android", "Cyborg", "cyborg", "Automaton", "automaton", "Servant", "servant", "Minion", "minion", "Slave", "slave", "Pawn", "pawn", "AI", "ai", "A.I.", "Char", "char", "Character", "character", "Model", "model", "Event", "event", "Special", "special", "Holiday", "holiday", "Seasonal", "seasonal"}
+local function IsPlayer(c) return Players:GetPlayerFromCharacter(c) ~= nil end
+local function IsNPC(c)
+    if not c or not c:IsA("Model") or IsPlayer(c) then return false end
+    local hum, head, hrp = c:FindFirstChildOfClass("Humanoid"), c:FindFirstChild("Head"), c:FindFirstChild("HumanoidRootPart")
+    if not hum or not head or not hrp or hum.Health <= 0 then return false end
+    if _G.AggressiveNPCDetection then return true end
+    local n = c.Name:lower()
+    for _, t in pairs(NPCTags) do if n:find(t:lower(), 1, true) then return true end end
+    local fols = {"NPCs", "Enemies", "Bots", "Mobs", "Targets", "Enemy", "Hostile", "Monsters", "Zombies", "Creatures", "Characters", "Spawns", "Bosses"}
+    for _, f in pairs(fols) do if workspace:FindFirstChild(f) and c:IsDescendantOf(workspace[f]) then return true end end
+    return false
 end
-
---// 函數：判斷是否為玩家
-local function IsPlayer(character)
-    if not character or not character:IsA("Model") then return false end
-    if character == LocalPlayer.Character then return true end
-    local player = Players:GetPlayerFromCharacter(character)
-    return player ~= nil
-end
-
---// 函數：判斷是否為 NPC
-local function IsNPC(character)
-    if not character or not character:IsA("Model") then return false end
-    if IsPlayer(character) then return false end
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    local head = character:FindFirstChild("Head")
-    local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not humanoid or not head or not hrp or humanoid.Health <= 0 then return false end
-    
-    if _G.AggressiveNPCDetection then DebugNPCDetection(character, "激進模式 - Humanoid 結構"); return true end
-    
-    local charName = character.Name:lower()
-    for _, tag in pairs(NPCTags) do if charName:find(tag:lower(), 1, true) then DebugNPCDetection(character, "名稱包含標籤: " .. tag); return true end end
-    
-    local npcFolders = {"NPCs", "Enemies", "Bots", "Mobs", "Targets", "Enemy", "Hostile", "Monsters", "Zombies", "Creatures", "Characters", "Spawns", "EnemySpawns", "NPCSpawns", "Bosses", "Minions"}
-    for _, folderName in pairs(npcFolders) do
-        local folder = workspace:FindFirstChild(folderName)
-        if folder and character:IsDescendantOf(folder) then DebugNPCDetection(character, "位於資料夾: " .. folderName); return true end
-    end
-    
-    local possibleNPCIndicators = {"NPC", "IsNPC", "IsEnemy", "Hostile", "Enemy", "IsBot", "IsMob", "IsMonster", "Team", "Faction"}
-    for _, indicator in pairs(possibleNPCIndicators) do
-        local value = character:FindFirstChild(indicator)
-        if value then
-            if value:IsA("BoolValue") and (indicator == "NPC" or indicator == "IsNPC" or indicator == "IsEnemy" or indicator == "Hostile") and value.Value == true then DebugNPCDetection(character, "BoolValue: " .. indicator); return true
-            elseif value:IsA("StringValue") then
-                local valLower = value.Value:lower()
-                if valLower == "enemy" or valLower == "hostile" or valLower == "npc" or valLower == "bot" or valLower == "monster" or valLower == "mob" then DebugNPCDetection(character, "StringValue: " .. indicator); return true end
-            elseif value:IsA("IntValue") and indicator == "Team" then DebugNPCDetection(character, "Team Value"); return true end
+local function FindNPCsInWorkspaceRecursive(p)
+    local fNPCs = {}
+    for _, child in pairs(p:GetChildren()) do
+        if child:IsA("Model") and IsNPC(child) then table.insert(fNPCs, child) end
+        if not child:IsA("BasePart") then
+            for _, npc in pairs(FindNPCsInWorkspaceRecursive(child)) do table.insert(fNPCs, npc) end
         end
     end
-    
-    local hasAIBehavior = false
-    for _, child in pairs(character:GetChildren()) do
-        local childName = child.Name:lower()
-        if (child:IsA("Script") or child:IsA("LocalScript")) and (childName:find("ai") or childName:find("behavior") or childName:find("path") or childName:find("attack") or childName:find("patrol") or childName:find("combat")) then hasAIBehavior = true; break end
-    end
-    
-    local tags = CollectionService:GetTags(character)
-    for _, tag in pairs(tags) do
-        local tagLower = tag:lower()
-        for _, npcTag in pairs(NPCTags) do if tagLower:find(npcTag:lower(), 1, true) then DebugNPCDetection(character, "CollectionService 標籤: " .. tag); return true end end
-    end
-    
-    local npcAbilities = {"Attack", "Damage", "Aggro", "Patrol", "Spawn", "Respawn", "AI", "BehaviorTree"}
-    for _, ability in pairs(npcAbilities) do if character:FindFirstChild(ability) or character:FindFirstChild(ability .. "Script") then hasAIBehavior = true; break end end
-    if hasAIBehavior then DebugNPCDetection(character, "偵測到 AI 行為"); return true end
-    
-    local namePatterns = {"^npc_", "^enemy_", "^bot_", "^mob_", "_npc$", "_enemy$", "_bot$"}
-    for _, pattern in pairs(namePatterns) do if string.match(charName, pattern) then DebugNPCDetection(character, "名稱模式: " .. pattern); return true end end
-    
-    DebugNPCDetection(character, "非玩家 Humanoid (通用結構)"); return true
+    return fNPCs
 end
-
---// 函數：遞迴搜索 Workspace 中的 NPC
-local function FindNPCsInWorkspaceRecursive(parent)
-    local foundNPCs = {}
-    for _, child in pairs(parent:GetChildren()) do
-        if child:IsA("Model") and IsNPC(child) then table.insert(foundNPCs, child) end
-        if not child:IsA("BasePart") and not child:IsA("Decal") and not child:IsA("Texture") then
-            local subNPCs = FindNPCsInWorkspaceRecursive(child)
-            for _, npc in pairs(subNPCs) do table.insert(foundNPCs, npc) end
-        end
-    end
-    return foundNPCs
-end
-
---// 函數：檢查玩家隊伍
-local function IsEnemyPlayer(player)
+local function IsEnemyPlayer(p)
     if not _G.TeamCheck then return true end
-    if not player or not LocalPlayer.Team or not player.Team then return true end
-    return LocalPlayer.Team ~= player.Team
+    if not p or not LocalPlayer.Team or not p.Team then return true end
+    return LocalPlayer.Team ~= p.Team
 end
-
---// 函數：檢查 NPC 隊伍
-local function IsEnemyNPC(npcModel)
+local function IsEnemyNPC(m)
     if not _G.TeamCheckForNPCs then return true end
-    local npcTeamValue = npcModel:FindFirstChild("Team")
-    if npcTeamValue and npcTeamValue:IsA("StringValue") then
-        local npcTeam = npcTeamValue.Value
-        local localTeam = LocalPlayer.Team and LocalPlayer.Team.Name or ""
-        if npcTeam and localTeam and npcTeam ~= localTeam then return true end
-    end
-    local isEnemy = npcModel:FindFirstChild("IsEnemy")
-    if isEnemy and isEnemy:IsA("BoolValue") and isEnemy.Value == true then return true end
+    local tv = m:FindFirstChild("Team")
+    if tv and tv:IsA("StringValue") and tv.Value ~= (LocalPlayer.Team and LocalPlayer.Team.Name or "") then return true end
+    local ie = m:FindFirstChild("IsEnemy")
+    if ie and ie:IsA("BoolValue") and ie.Value then return true end
     return true
 end
-
---// 函數：獲取瞄準部位
-local function GetTargetPart(character)
-    if _G.AimPart == "Head" then return character:FindFirstChild("Head")
-    elseif _G.AimPart == "Torso" then return character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso") or character:FindFirstChild("HumanoidRootPart")
+local function GetTargetPart(c)
+    if _G.AimPart == "Head" then return c:FindFirstChild("Head")
+    elseif _G.AimPart == "Torso" then return c:FindFirstChild("UpperTorso") or c:FindFirstChild("Torso") or c:FindFirstChild("HumanoidRootPart")
     elseif _G.AimPart == "Random" then
-        local parts = {character:FindFirstChild("Head"), character:FindFirstChild("UpperTorso"), character:FindFirstChild("Torso"), character:FindFirstChild("HumanoidRootPart")}
-        for _, part in pairs(parts) do if part then return part end end
+        local p = {c:FindFirstChild("Head"), c:FindFirstChild("UpperTorso"), c:FindFirstChild("Torso"), c:FindFirstChild("HumanoidRootPart")}
+        for _, v in pairs(p) do if v then return v end end
     elseif _G.AimPart == "Both" then
-        local head = character:FindFirstChild("Head")
-        local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso") or character:FindFirstChild("HumanoidRootPart")
+        local head = c:FindFirstChild("Head")
+        local torso = c:FindFirstChild("UpperTorso") or c:FindFirstChild("Torso") or c:FindFirstChild("HumanoidRootPart")
         if head and torso then return tick() % 1 > 0.5 and head or torso elseif head then return head elseif torso then return torso end
     end
-    return character:FindFirstChild("HumanoidRootPart") or character:FindFirstChild("Head")
+    return c:FindFirstChild("HumanoidRootPart") or c:FindFirstChild("Head")
 end
 
---// 函數：更新快取
 local function UpdateCaches()
-    local currentTime = tick()
-    if currentTime - LastCacheUpdate < CacheUpdateInterval then return end
-    LastCacheUpdate = currentTime
-    
-    local tempNPCCache = {}
-    local tempPlayerCache = {}
-    local allModels = {}
-    
-    local wsChildren = workspace:GetChildren()
-    for _, model in pairs(wsChildren) do if model:IsA("Model") and model ~= LocalPlayer.Character then table.insert(allModels, model) end end
-    
-    local npcFolders = {"NPCs", "Enemies", "Bots", "Mobs", "Targets", "Characters", "Spawns", "Monsters", "Zombies", "Enemy", "Hostile", "Bosses", "Minions", "Creatures"}
-    for _, folderName in pairs(npcFolders) do
-        local folder = workspace:FindFirstChild(folderName)
-        if folder then
-            local npcsInFolder = FindNPCsInWorkspaceRecursive(folder)
-            for _, npc in pairs(npcsInFolder) do table.insert(allModels, npc) end
-        end
+    if tick() - LastCacheUpdate < CacheUpdateInterval then return end
+    LastCacheUpdate = tick()
+    local tNPC, tPlayer, allM = {}, {}, {}
+    for _, m in pairs(workspace:GetChildren()) do if m:IsA("Model") and m ~= LocalPlayer.Character then table.insert(allM, m) end end
+    local fols = {"NPCs", "Enemies", "Bots", "Mobs", "Targets", "Characters", "Spawns", "Monsters", "Zombies", "Enemy"}
+    for _, fn in pairs(fols) do
+        if workspace:FindFirstChild(fn) then for _, npc in pairs(FindNPCsInWorkspaceRecursive(workspace[fn])) do table.insert(allM, npc) end end
     end
-    
     if _G.AggressiveNPCDetection then
-        local counter = 0
-        local descendants = workspace:GetDescendants()
-        for _, descendant in pairs(descendants) do
-            if descendant:IsA("Model") and descendant ~= LocalPlayer.Character then
-                table.insert(allModels, descendant)
-                counter = counter + 1
-                if counter % 150 == 0 then task.wait() end
-            end
+        local c = 0
+        for _, d in pairs(workspace:GetDescendants()) do
+            if d:IsA("Model") and d ~= LocalPlayer.Character then table.insert(allM, d); c = c + 1; if c % 150 == 0 then task.wait() end end
         end
     end
-    
-    local processCounter = 0
-    for _, model in pairs(allModels) do
-        processCounter = processCounter + 1
-        if processCounter % 200 == 0 then task.wait() end
-        local hrp = model:FindFirstChild("HumanoidRootPart")
-        local humanoid = model:FindFirstChildOfClass("Humanoid")
-        if hrp and humanoid and humanoid.Health > 0 then
-            if IsPlayer(model) then tempPlayerCache[model] = {Model = model, HRP = hrp, Humanoid = humanoid, Player = Players:GetPlayerFromCharacter(model), IsNPC = false}
-            elseif IsNPC(model) then tempNPCCache[model] = {Model = model, HRP = hrp, Humanoid = humanoid, IsNPC = true} end
+    local pc = 0
+    for _, m in pairs(allM) do
+        pc = pc + 1; if pc % 200 == 0 then task.wait() end
+        local hrp, hum = m:FindFirstChild("HumanoidRootPart"), m:FindFirstChildOfClass("Humanoid")
+        if hrp and hum and hum.Health > 0 then
+            if IsPlayer(m) then tPlayer[m] = {Model = m, HRP = hrp, Humanoid = hum, Player = Players:GetPlayerFromCharacter(m)}
+            elseif IsNPC(m) then tNPC[m] = {Model = m, HRP = hrp, Humanoid = hum} end
         end
     end
-    
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character then
-            local char = player.Character
-            local hrp = char:FindFirstChild("HumanoidRootPart")
-            local humanoid = char:FindFirstChildOfClass("Humanoid")
-            if hrp and humanoid and humanoid.Health > 0 then tempPlayerCache[char] = {Model = char, HRP = hrp, Humanoid = humanoid, Player = player, IsNPC = false} end
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local hrp, hum = p.Character:FindFirstChild("HumanoidRootPart"), p.Character:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then tPlayer[p.Character] = {Model = p.Character, HRP = hrp, Humanoid = hum, Player = p} end
         end
     end
-    
-    NPCCache = tempNPCCache
-    PlayerCache = tempPlayerCache
+    NPCCache, PlayerCache = tNPC, tPlayer
 end
 
---// 函數：驗證當前目標 (Sticky Aim)
+--// 【霸體修復】目標驗證 (鎖死機制)
 local function ValidateCurrentTarget()
     if not CurrentTarget or not TargetPart then return false end
     local humanoid = CurrentTarget:FindFirstChildOfClass("Humanoid")
     local hrp = CurrentTarget:FindFirstChild("HumanoidRootPart")
-    if not humanoid or humanoid.Health <= 0 or not hrp then return false end
     
+    if not humanoid or humanoid.Health <= 0 or not hrp then return false end
+
     local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local targetPos = TargetPart.Position
     local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos)
-    if not onScreen then return false end
     
+    if not onScreen then return false end
+
     local screenPoint = Vector2.new(screenPos.X, screenPos.Y)
     local dist = (screenPoint - screenCenter).Magnitude
-    if dist > _G.FOV then return false end
     
-    if _G.VisibleCheck then
+    local allowedFOV = _G.StickyAim and (_G.FOV * 1.5) or _G.FOV
+    if dist > allowedFOV then return false end
+
+    if _G.VisibleCheck and not _G.StickyAim then
         local raycastParams = RaycastParams.new()
+        raycastParams.FilterType = Enum.RaycastFilterType.Exclude
         raycastParams.FilterDescendantsInstances = {LocalPlayer.Character, Camera}
-        raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
         raycastParams.IgnoreWater = true
         local origin = Camera.CFrame.Position
         local direction = (targetPos - origin).Unit * (targetPos - origin).Magnitude
         local ray = workspace:Raycast(origin, direction, raycastParams)
         if ray and not ray.Instance:IsDescendantOf(CurrentTarget) then return false end
     end
+    
     return true
 end
 
---// 函數：搜尋目標
+--// 【修復】搜尋目標 (精準優先級別)
 local function GetTarget()
     if not LocalPlayer.Character then TargetInRange = false; TargetPart = nil; return nil end
     UpdateCaches()
-    
+
     if _G.StickyAim and CurrentTarget then
-        if ValidateCurrentTarget() then TargetInRange = true; return CurrentTarget
-        else CurrentTarget = nil; TargetPart = nil end
+        if ValidateCurrentTarget() then 
+            TargetInRange = true
+            return CurrentTarget
+        else 
+            CurrentTarget = nil
+            TargetPart = nil 
+        end
     end
-    
+
     local bestScore = math.huge
     local closestPart = nil
     local closestTarget = nil
     local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local localChar = LocalPlayer.Character
     local localRoot = localChar:FindFirstChild("HumanoidRootPart")
-    
+
     TargetInRange = false
     TargetPart = nil
     if not localRoot then return nil end
-    
+
     local function ProcessTarget(data, isPlayer)
         local hrp = data.HRP
         local humanoid = data.Humanoid
         if hrp and humanoid and humanoid.Health > 0 then
             if isPlayer then if not IsEnemyPlayer(data.Player) then return end
             else if not IsEnemyNPC(data.Model) then return end end
-            
+
             local targetPart = GetTargetPart(data.Model)
             if not targetPart then targetPart = hrp end
             local targetPos = targetPart.Position
-            
+
             if hrp.Velocity.Magnitude > 1 and _G.Prediction > 0 then targetPos = targetPos + (hrp.Velocity * _G.Prediction) end
             local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos)
-            
+
             if onScreen then
                 local screenPoint = Vector2.new(screenPos.X, screenPos.Y)
                 local distFromCenter = (screenPoint - screenCenter).Magnitude
+                
                 if distFromCenter <= _G.FOV then
                     local isVisible = true
                     if _G.VisibleCheck then
                         local raycastParams = RaycastParams.new()
+                        raycastParams.FilterType = Enum.RaycastFilterType.Exclude
                         raycastParams.FilterDescendantsInstances = {localChar, Camera}
-                        raycastParams.FilterType = Enum.RaycastFilterType.Blacklist
                         raycastParams.IgnoreWater = true
                         local origin = Camera.CFrame.Position
                         local direction = (targetPos - origin).Unit * (targetPos - origin).Magnitude
                         local ray = workspace:Raycast(origin, direction, raycastParams)
                         if ray and not ray.Instance:IsDescendantOf(data.Model) then isVisible = false end
                     end
-                    
+
                     TargetInRange = true
                     if isVisible or not _G.VisibleCheck then
                         local currentScore = 0
-                        if _G.TargetPriority == "Crosshair" then currentScore = distFromCenter
-                        elseif _G.TargetPriority == "Distance" then currentScore = (targetPos - localRoot.Position).Magnitude
-                        elseif _G.TargetPriority == "LowestHP" then currentScore = humanoid.Health
-                        else currentScore = distFromCenter end
                         
+                        if _G.TargetPriority == "Crosshair" then 
+                            currentScore = distFromCenter
+                        elseif _G.TargetPriority == "Distance" then 
+                            currentScore = (targetPos - localRoot.Position).Magnitude
+                        elseif _G.TargetPriority == "LowestHP" then 
+                            currentScore = humanoid.Health
+                        else 
+                            currentScore = distFromCenter 
+                        end
+
                         if currentScore < bestScore then
                             bestScore = currentScore
                             closestPart = targetPart
@@ -456,15 +306,14 @@ local function GetTarget()
             end
         end
     end
-    
+
     if _G.TargetMode == "NPCs" or _G.TargetMode == "Both" then for _, data in pairs(NPCCache) do ProcessTarget(data, false) end end
     if _G.TargetMode == "Players" or _G.TargetMode == "Both" then for _, data in pairs(PlayerCache) do ProcessTarget(data, true) end end
-    
+
     TargetPart = closestPart
     return closestTarget
 end
 
---// 更新目標
 task.spawn(function()
     while true do
         task.wait(_G.UpdateRate)
@@ -473,36 +322,33 @@ task.spawn(function()
     end
 end)
 
---// 函數：判斷是否命中
 local function ShouldHit()
     if _G.HitChance >= 100 then return true end
     if _G.HitChance <= 0 then return false end
     return math.random(1, 100) <= _G.HitChance
 end
 
---// 函數：計算命中率顯示
 local function CalculateHitChanceDisplay()
     if not CurrentTarget or not TargetPart then return 0 end
     local baseChance = _G.HitChance
     local distanceFactor = 1.0
     local fovFactor = 1.0
-    
+
     if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
         local distance = (TargetPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude
         if distance < 50 then distanceFactor = 1.1 elseif distance > 200 then distanceFactor = 0.8 end
     end
-    
+
     if _G.FOV < 100 then fovFactor = 1.15 elseif _G.FOV > 250 then fovFactor = 0.9 end
     local finalChance = math.clamp((baseChance * distanceFactor * fovFactor) + math.random(-5, 5), 1, 100)
     return math.floor(finalChance)
 end
 
---// 函數：更新目標資訊
 local function UpdateTargetInfo()
     if not _G.ShowTarget or not TargetInfo or not _G.SilentAim then
         TargetInfo.Visible = false; TargetInfo.Text = ""; return
     end
-    
+
     local shouldShowHitChance = _G.ShowHitChance and _G.HitChance > 0
     if CurrentTarget and TargetPart then
         local screenPos, onScreen = Camera:WorldToViewportPoint(TargetPart.Position)
@@ -510,7 +356,7 @@ local function UpdateTargetInfo()
             TargetInfo.Visible = true
             TargetInfo.Position = Vector2.new(screenPos.X, screenPos.Y + 20)
             local infoLines = {}
-            
+
             if _G.ShowTargetName then
                 local targetName = CurrentTarget.Name
                 local targetType = "NPC"
@@ -520,21 +366,21 @@ local function UpdateTargetInfo()
                 if _G.ShowTargetType then table.insert(infoLines, string.format("[%s] %s", targetType, targetName))
                 else table.insert(infoLines, targetName) end
             end
-            
+
             if _G.ShowTargetHP then
                 local humanoid = CurrentTarget:FindFirstChildOfClass("Humanoid")
                 if humanoid then table.insert(infoLines, string.format("HP: %.0f/%.0f", humanoid.Health, humanoid.MaxHealth)) end
             end
-            
+
             if _G.ShowTargetDistance then
                 if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
                     local distance = string.format("%.1f", (TargetPart.Position - LocalPlayer.Character.HumanoidRootPart.Position).Magnitude)
                     table.insert(infoLines, string.format("距離: %s studs", distance))
                 end
             end
-            
+
             if shouldShowHitChance then table.insert(infoLines, string.format("機率: %d%%", CalculateHitChanceDisplay())) end
-            
+
             TargetInfo.Text = #infoLines > 0 and table.concat(infoLines, "\n") or "已鎖定目標"
         else TargetInfo.Visible = false; TargetInfo.Text = "" end
     else TargetInfo.Visible = false; TargetInfo.Text = "" end
@@ -544,29 +390,29 @@ end
 if not oldNamecall then
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
         if not _G.SilentAim or not TargetPart or not CurrentTarget then return oldNamecall(self, ...) end
-        
+
         local method = getnamecallmethod()
         local args = {...}
-        
+
         if (method == "FireServer" or method == "InvokeServer") and typeof(self) == "Instance" then
             local selfName = self.Name:lower()
             if string.find(selfName, "fire") or string.find(selfName, "hit") or string.find(selfName, "attack") or string.find(selfName, "damage") then
                 if not ShouldHit() then return oldNamecall(self, ...) end
-                
+
                 local newArgs = {}
                 local modified = false
-                
+
                 for i, arg in pairs(args) do
                     if typeof(arg) == "Vector3" then newArgs[i] = TargetPart.Position; modified = true
                     elseif typeof(arg) == "CFrame" then newArgs[i] = CFrame.new(TargetPart.Position); modified = true
                     elseif typeof(arg) == "Ray" then newArgs[i] = Ray.new(arg.Origin, (TargetPart.Position - arg.Origin).Unit * 100); modified = true
                     else newArgs[i] = arg end
                 end
-        
+
                 if modified then return oldNamecall(self, unpack(newArgs)) end
             end
         end
-        
+
         if method == "Raycast" and self == workspace then
             local origin = args[1]
             local direction = args[2]
@@ -593,14 +439,13 @@ if not oldIndex then
     end)
 end
 
---// 更新迴圈 (視覺 - 已解除幀率限制)
 RunService.RenderStepped:Connect(function()
     Circle.Visible = _G.SilentAim
     if _G.SilentAim then
         local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
         Circle.Position = screenCenter
         Circle.Radius = _G.FOV
-        
+
         if CurrentTarget then
             local isPlayerTarget = false
             for _, data in pairs(PlayerCache) do if data.Model == CurrentTarget then isPlayerTarget = true; break end end
@@ -609,26 +454,22 @@ RunService.RenderStepped:Connect(function()
             Circle.Color = TargetInRange and Color3.fromRGB(255, 255, 0) or Color3.fromRGB(255, 50, 0)
         end
     else Circle.Visible = false end
-    
+
     UpdateTargetInfo()
     UpdateHighlight()
 end)
 
---// ==================================================
 --// MANO GUSTAVO UI LIBRARY 
---// ==================================================
-
 local Library = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/Mano-Gustavo/Mano-Gustavo-Library/refs/heads/main/library.lua"
 ))()
 
 local Window = Library:CreateWindow({
-    Title = "🎯 靜默瞄準 v3.1 (全解鎖絲滑版)",
+    Title = "🎯 靜默瞄準 (霸體防亂鎖版)",
     Author = "Silent Aim NPC",
     Keybind = Enum.KeyCode.RightControl
 })
 
---// 創建 8 個完整分頁
 local TabMain = Window:CreateTab("主要設定")
 local TabPriority = Window:CreateTab("優先級別")
 local TabConfig = Window:CreateTab("詳細設定")
@@ -638,7 +479,6 @@ local TabExtra = Window:CreateTab("額外功能")
 local TabNPC = Window:CreateTab("NPC 控制")
 local TabInfo = Window:CreateTab("資訊與狀態")
 
---// 1. 主要設定 (TabMain)
 TabMain:CreateLabel("=== 主要控制項 ===")
 TabMain:CreateToggle("啟動靜默瞄準 (Silent Aim)", function(Value)
     _G.SilentAim = Value
@@ -650,51 +490,40 @@ TabMain:CreateToggle("啟動靜默瞄準 (Silent Aim)", function(Value)
         Library:Notification({Title = "🎯 靜默瞄準", Text = "已停用", Duration = 1.5, Type = "Error"})
     end
 end, false)
-
 TabMain:CreateSlider("範圍大小 (FOV)", 50, 300, 150, function(Value) _G.FOV = math.floor(Value); Circle.Radius = _G.FOV end)
-TabMain:CreateSlider("預判強度 (Predição)", 0, 0.5, 0, function(Value) _G.Prediction = tonumber(string.format("%.3f", Value)) end) -- 預設改為 0
+TabMain:CreateSlider("預判強度 (Predição)", 0, 0.5, 0, function(Value) _G.Prediction = tonumber(string.format("%.3f", Value)) end) 
 TabMain:CreateSlider("命中機率 (Hit Chance)", 0, 100, 100, function(Value) _G.HitChance = math.floor(Value) end)
-TabMain:CreateSlider("更新頻率 (Taxa de Atualização)", 0, 0.5, 0.01, function(Value) _G.UpdateRate = tonumber(string.format("%.3f", Value)) end) -- 預設改為 0.01
+TabMain:CreateSlider("更新頻率 (Taxa de Atualização)", 0, 0.5, 0.01, function(Value) _G.UpdateRate = tonumber(string.format("%.3f", Value)) end) 
 
---// 2. 優先級別 (TabPriority)
 TabPriority:CreateLabel("=== 目標鎖定邏輯 ===")
-TabPriority:CreateLabel("設定腳本如何選擇優先目標：")
-
 TabPriority:CreateDropdown("優先模式", {"Crosshair", "Distance", "LowestHP"}, function(Value)
     _G.TargetPriority = Value
     CurrentTarget = nil 
     Library:Notification({Title = "模式已變更", Text = "當前優先: " .. Value, Duration = 2})
 end)
-
 TabPriority:CreateToggle("黏性鎖定 (Sticky Aim)", function(Value)
     _G.StickyAim = Value
 end, true)
-
 TabPriority:CreateLabel("----------------")
 TabPriority:CreateLabel("• Crosshair (準星): 鎖定最靠近畫面中心的目標")
 TabPriority:CreateLabel("• Distance (距離): 鎖定遊戲內距離你最近的目標")
 TabPriority:CreateLabel("• LowestHP (最低血量): 鎖定血量最少的目標")
-TabPriority:CreateLabel("• 黏性鎖定: 目標死亡前不會隨意切換，防止鏡頭亂抖")
+TabPriority:CreateLabel("• 黏性鎖定: 目標死亡前不會隨意切換 (無視子彈遮擋)")
 
---// 3. 詳細設定 (TabConfig)
 TabConfig:CreateLabel("=== 一般設定 ===")
-TabConfig:CreateDropdown("瞄準對象", {"Players", "NPCs", "Both"}, function(Value) _G.TargetMode = Value end) -- 預設改為 Players
+TabConfig:CreateDropdown("瞄準對象", {"Players", "NPCs", "Both"}, function(Value) _G.TargetMode = Value end) 
 TabConfig:CreateDropdown("身體部位", {"Head", "Torso", "Both", "Random"}, function(Value) _G.AimPart = Value end)
 TabConfig:CreateToggle("牆壁檢查 (Wall Check)", function(Value) _G.VisibleCheck = Value end, true)
 TabConfig:CreateToggle("子彈傳送 (Bullet Teleport)", function(Value) _G.BulletTeleport = Value end, false)
 TabConfig:CreateToggle("顯示目標外框", function(Value) _G.ShowTarget = Value end, true)
 
---// 4. 瞄準視覺 (TabAim)
 TabAim:CreateLabel("=== 瞄準鏡設定 ===")
-TabAim:CreateLabel("頭部(Head): 致命傷害 | 身體(Torso): 普通傷害")
 TabAim:CreateColorPicker("FOV 圓圈顏色", Color3.fromRGB(0, 255, 0), function(Color) Circle.Color = Color end)
 
---// 5. 隊伍判定 (TabTeam)
 TabTeam:CreateLabel("=== 隊伍設定 ===")
 TabTeam:CreateToggle("檢查隊友 (玩家)", function(Value) _G.TeamCheck = Value end, true)
 TabTeam:CreateToggle("檢查隊友 (NPC)", function(Value) _G.TeamCheckForNPCs = Value end, false)
 
---// 6. 額外功能 (TabExtra)
 TabExtra:CreateLabel("=== 額外顯示設定 ===")
 TabExtra:CreateToggle("目標高亮顯示 (Highlight)", function(Value) _G.HighlightTarget = Value end, false)
 TabExtra:CreateColorPicker("NPC 高亮顏色", Color3.fromRGB(255, 50, 50), function(Color) end)
@@ -702,43 +531,35 @@ TabExtra:CreateColorPicker("玩家高亮顏色", Color3.fromRGB(50, 150, 255), f
 TabExtra:CreateTextBox("快取刷新間隔 (秒)", "0.5", function(Text) local num = tonumber(Text); if num and num >= 0 then CacheUpdateInterval = num end end)
 
 TabExtra:CreateLabel("=== 實用功能 ===")
--- [新增] 瞬間互動開關綁定
 TabExtra:CreateToggle("瞬間互動 (Instant Interact)", function(Value) 
     _G.InstantInteract = Value 
 end, false)
 
---// 7. NPC 控制 (TabNPC)
 TabNPC:CreateLabel("=== NPC 設定 ===")
-TabNPC:CreateToggle("激進偵測模式 (防延遲)", function(Value)
+TabNPC:CreateToggle("激進偵測模式", function(Value)
     _G.AggressiveNPCDetection = Value
     LastCacheUpdate = 0; UpdateCaches()
-    if Value then Library:Notification({Title = "⚠️ 激進模式", Text = "已啟用 - 防延遲機制運作中", Duration = 2, Type = "Warning"}) end
 end, false)
 TabNPC:CreateToggle("在控制台 Debug NPCs", function(Value) _G.DebugNPCs = Value end, false)
 TabNPC:CreateButton("強制更新 NPC 快取", function() LastCacheUpdate = 0; UpdateCaches() end)
-TabNPC:CreateButton("列出偵測到的 NPC", function()
-    local npcCount = 0; for _ in pairs(NPCCache) do npcCount = npcCount + 1 end
-    Library:Notification({Title = "📊 偵測報告", Text = string.format("已鎖定 NPC 數量: %d", npcCount), Duration = 2})
-end)
 
---// 8. 資訊與狀態 (TabInfo)
 TabInfo:CreateLabel("=== 資訊介面控制 ===")
 TabInfo:CreateToggle("顯示 名稱/類型", function(Value) _G.ShowTargetName = Value; if _G.SilentAim then UpdateTargetInfo() end end, true)
 TabInfo:CreateToggle("顯示 血量 (HP)", function(Value) _G.ShowTargetHP = Value; if _G.SilentAim then UpdateTargetInfo() end end, true)
 TabInfo:CreateToggle("顯示 距離", function(Value) _G.ShowTargetDistance = Value; if _G.SilentAim then UpdateTargetInfo() end end, true)
+-- 【完美回歸】命中率開關回來啦！
 TabInfo:CreateToggle("顯示 命中機率", function(Value) _G.ShowHitChance = Value; if _G.SilentAim then UpdateTargetInfo() end end, true)
-TabInfo:CreateLabel("版本資訊：3.1 (全解鎖絲滑版 + 瞬間互動)")
-TabInfo:CreateLabel("✅ 專為 The Border 最佳化")
+
+TabInfo:CreateLabel("✅ 已賦予 StickyAim 霸體機制 (無視開槍遮擋)")
 TabInfo:CreateButton("清除畫面 UI", function() CleanupUIOnly() end)
 
 Library:Notification({
-    Title = "🎯 The Border 專用版",
-    Text = "幀率限制已解除，預判與刷新已最佳化！",
+    Title = "🎯 霸體版就緒",
+    Text = "亂換目標問題已解決，盡情開火吧！",
     Duration = 4,
     Type = "Success"
 })
 
---// 離開遊戲時自動清理
 game:GetService("Players").PlayerRemoving:Connect(function(player)
     if player == LocalPlayer then CleanupUIOnly() end
 end)
