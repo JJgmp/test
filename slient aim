@@ -4,9 +4,9 @@ _G.FOV = 150
 _G.VisibleCheck = true
 _G.TeamCheck = true
 _G.TeamCheckForNPCs = false
-_G.Prediction = 0 -- [已修改] 針對 The Border 設為 0 (無預判，即時命中最準)
-_G.UpdateRate = 0.01 -- [已修改] 極致刷新率
-_G.TargetMode = "Players" -- [已修改] 預設只鎖定玩家，大幅降低卡頓
+_G.Prediction = 0 -- 針對 The Border 設為 0 (無預判，即時命中最準)
+_G.UpdateRate = 0.01 -- 極致刷新率
+_G.TargetMode = "Players" -- 預設只鎖定玩家，大幅降低卡頓
 _G.AimPart = "Head" -- "Head", "Torso", "Both", "Random"
 _G.ShowTarget = true -- 顯示目標資訊
 _G.HitChance = 100 -- 命中機率 (1-100%)
@@ -19,9 +19,10 @@ _G.ShowHitChance = true -- 顯示命中機率
 _G.HighlightTarget = false -- 高亮目標
 _G.DebugNPCs = false -- 在控制台顯示偵測到的 NPC
 _G.AggressiveNPCDetection = false -- 激進模式：預設關閉
+_G.InstantInteract = false -- [新增] 瞬間互動開關
 
 --// 新設定 (優先級)
-_G.TargetPriority = "Crosshair" -- [已修改] 預設為準星優先，適合人群中點名
+_G.TargetPriority = "Crosshair" -- 預設為準星優先，適合人群中點名
 _G.StickyAim = true -- 若為 true，鎖定目標直到死亡或離開 FOV (防止抖動)
 
 --// 防踢保護 (自動啟用)
@@ -49,9 +50,17 @@ local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
+local ProximityPromptService = game:GetService("ProximityPromptService") -- [新增] 互動服務
 local Camera = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
+
+--// 瞬間互動邏輯 (Instant Interact)
+ProximityPromptService.PromptButtonHoldBegan:Connect(function(prompt, player)
+    if _G.InstantInteract then
+        fireproximityprompt(prompt)
+    end
+end)
 
 --// FOV 圓圈
 local Circle = Drawing.new("Circle")
@@ -692,6 +701,12 @@ TabExtra:CreateColorPicker("NPC 高亮顏色", Color3.fromRGB(255, 50, 50), func
 TabExtra:CreateColorPicker("玩家高亮顏色", Color3.fromRGB(50, 150, 255), function(Color) end)
 TabExtra:CreateTextBox("快取刷新間隔 (秒)", "0.5", function(Text) local num = tonumber(Text); if num and num >= 0 then CacheUpdateInterval = num end end)
 
+TabExtra:CreateLabel("=== 實用功能 ===")
+-- [新增] 瞬間互動開關綁定
+TabExtra:CreateToggle("瞬間互動 (Instant Interact)", function(Value) 
+    _G.InstantInteract = Value 
+end, false)
+
 --// 7. NPC 控制 (TabNPC)
 TabNPC:CreateLabel("=== NPC 設定 ===")
 TabNPC:CreateToggle("激進偵測模式 (防延遲)", function(Value)
@@ -712,7 +727,7 @@ TabInfo:CreateToggle("顯示 名稱/類型", function(Value) _G.ShowTargetName =
 TabInfo:CreateToggle("顯示 血量 (HP)", function(Value) _G.ShowTargetHP = Value; if _G.SilentAim then UpdateTargetInfo() end end, true)
 TabInfo:CreateToggle("顯示 距離", function(Value) _G.ShowTargetDistance = Value; if _G.SilentAim then UpdateTargetInfo() end end, true)
 TabInfo:CreateToggle("顯示 命中機率", function(Value) _G.ShowHitChance = Value; if _G.SilentAim then UpdateTargetInfo() end end, true)
-TabInfo:CreateLabel("版本資訊：3.1 (全解鎖絲滑版)")
+TabInfo:CreateLabel("版本資訊：3.1 (全解鎖絲滑版 + 瞬間互動)")
 TabInfo:CreateLabel("✅ 專為 The Border 最佳化")
 TabInfo:CreateButton("清除畫面 UI", function() CleanupUIOnly() end)
 
