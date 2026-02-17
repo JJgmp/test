@@ -1,6 +1,6 @@
 --// CONFIGURAÇÕES (設定)
 _G.SilentAim = false
-_G.FOV = 150
+_G.FOV = 115 -- 【已修改】初始 FOV 設為 115
 _G.VisibleCheck = true
 _G.TeamCheck = true
 _G.TeamCheckForNPCs = false
@@ -22,8 +22,9 @@ _G.AggressiveNPCDetection = false
 _G.InstantInteract = false 
 
 --// 新設定 (高亮、優先級與白名單)
-_G.TargetPriority = "Crosshair" 
+_G.TargetPriority = "TargetWeight" -- 【已修改】預設啟動智能權重模式
 _G.StickyAim = true 
+_G.StickyUnlockDelay = 1.0 -- 【新增】目標躲在牆後多久才解鎖 (預設 1 秒)
 _G.NPCHighlightColor = Color3.fromRGB(255, 50, 50)
 _G.PlayerHighlightColor = Color3.fromRGB(50, 150, 255)
 _G.IgnoreFriends = false -- 自動忽略 Roblox 好友
@@ -68,7 +69,8 @@ local NPCCache, PlayerCache = {}, {}
 local LastCacheUpdate, CacheUpdateInterval = 0, 0.5
 local oldNamecall, oldIndex = nil, nil
 
---// 好友快取系統 (避免遊戲卡頓)
+--// 霸體視野丟失計時器 【新增】
+local TargetLostSightTime = 0 
 local FriendCache = {}
 
 --// 函數：創建與更新高亮
@@ -111,6 +113,7 @@ local function CleanupUIOnly()
     if TargetHighlight then TargetHighlight:Destroy(); TargetHighlight = nil end
     if HighlightConnection then HighlightConnection:Disconnect(); HighlightConnection = nil end
     CurrentTarget, TargetPart, TargetInRange = nil, nil, false
+    TargetLostSightTime = 0
     NPCCache, PlayerCache = {}, {}
 end
 
@@ -144,13 +147,13 @@ local function IsEnemyPlayer(p)
     if not p then return true end
     if p == LocalPlayer then return false end
 
-    -- 1. 檢查手動白名單 (直接比對名字)
+    -- 1. 檢查手動白名單
     local pName = string.lower(p.Name)
     local pDisplay = string.lower(p.DisplayName)
     for _, whitelistName in ipairs(_G.CustomWhitelist) do
         local safeName = string.lower(whitelistName)
         if string.find(pName, safeName, 1, true) or string.find(pDisplay, safeName, 1, true) then
-            return false -- 是白名單中的玩家，判定為友軍
+            return false 
         end
     end
 
@@ -159,7 +162,7 @@ local function IsEnemyPlayer(p)
         if FriendCache[p.UserId] == nil then
             task.spawn(function() pcall(function() FriendCache[p.UserId] = LocalPlayer:IsFriendsWith(p.UserId) end) end)
         elseif FriendCache[p.UserId] == true then
-            return false -- 是 Roblox 好友，判定為友軍
+            return false 
         end
     end
 
@@ -226,39 +229,71 @@ local function UpdateCaches()
     NPCCache, PlayerCache = tNPC, tPlayer
 end
 
---// 【霸體修復】目標驗證 (鎖死機制)
+--// 【重寫：霸體解鎖機制】驗證當前目標
 local function ValidateCurrentTarget()
     if not CurrentTarget or not TargetPart then return false end
     local humanoid = CurrentTarget:FindFirstChildOfClass("Humanoid")
     local hrp = CurrentTarget:FindFirstChild("HumanoidRootPart")
     if not humanoid or humanoid.Health <= 0 or not hrp then return false end
+    
     local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local targetPos = TargetPart.Position
     local screenPos, onScreen = Camera:WorldToViewportPoint(targetPos)
+    
     if not onScreen then return false end
+    
     local screenPoint = Vector2.new(screenPos.X, screenPos.Y)
     local dist = (screenPoint - screenCenter).Magnitude
     local allowedFOV = _G.StickyAim and (_G.FOV * 1.5) or _G.FOV
     if dist > allowedFOV then return false end
-    if _G.VisibleCheck and not _G.StickyAim then
-        local raycastParams = RaycastParams.new(); raycastParams.FilterType = Enum.RaycastFilterType.Exclude; raycastParams.FilterDescendantsInstances = {LocalPlayer.Character, Camera}; raycastParams.IgnoreWater = true
-        local origin = Camera.CFrame.Position; local direction = (targetPos - origin).Unit * (targetPos - origin).Magnitude
+    
+    if _G.VisibleCheck then
+        local raycastParams = RaycastParams.new()
+        raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+        raycastParams.FilterDescendantsInstances = {LocalPlayer.Character, Camera}
+        raycastParams.IgnoreWater = true
+        
+        local origin = Camera.CFrame.Position
+        local direction = (targetPos - origin).Unit * (targetPos - origin).Magnitude
         local ray = workspace:Raycast(origin, direction, raycastParams)
-        if ray and not ray.Instance:IsDescendantOf(CurrentTarget) then return false end
+        
+        local isVisible = (not ray) or (ray.Instance:IsDescendantOf(CurrentTarget))
+        
+        if isVisible then
+            TargetLostSightTime = 0 
+        else
+            if _G.StickyAim then
+                if TargetLostSightTime == 0 then
+                    TargetLostSightTime = tick() 
+                elseif (tick() - TargetLostSightTime) > _G.StickyUnlockDelay then
+                    TargetLostSightTime = 0
+                    return false
+                end
+            else
+                return false
+            end
+        end
     end
     return true
 end
 
---// 搜尋目標 (精準優先級別)
+--// 【核心修改】搜尋目標 (新增 TargetWeight 邏輯)
 local function GetTarget()
     if not LocalPlayer.Character then TargetInRange = false; TargetPart = nil; return nil end
     UpdateCaches()
 
     if _G.StickyAim and CurrentTarget then
-        if ValidateCurrentTarget() then TargetInRange = true; return CurrentTarget else CurrentTarget = nil; TargetPart = nil end
+        if ValidateCurrentTarget() then 
+            TargetInRange = true
+            return CurrentTarget 
+        else 
+            CurrentTarget = nil 
+            TargetPart = nil 
+            TargetLostSightTime = 0 
+        end
     end
 
-    local bestScore = math.huge
+    local bestScore = _G.TargetPriority == "TargetWeight" and -math.huge or math.huge
     local closestPart, closestTarget = nil, nil
     local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local localChar = LocalPlayer.Character
@@ -269,7 +304,6 @@ local function GetTarget()
     local function ProcessTarget(data, isPlayer)
         local hrp, humanoid = data.HRP, data.Humanoid
         if hrp and humanoid and humanoid.Health > 0 then
-            -- 在這裡攔截：如果是友軍(包含白名單)，直接跳過
             if isPlayer then if not IsEnemyPlayer(data.Player) then return end
             else if not IsEnemyNPC(data.Model) then return end end
 
@@ -292,15 +326,38 @@ local function GetTarget()
                         if ray and not ray.Instance:IsDescendantOf(data.Model) then isVisible = false end
                     end
 
-                    TargetInRange = true
                     if isVisible or not _G.VisibleCheck then
-                        local currentScore = 0
-                        if _G.TargetPriority == "Crosshair" then currentScore = distFromCenter
-                        elseif _G.TargetPriority == "Distance" then currentScore = (targetPos - localRoot.Position).Magnitude
-                        elseif _G.TargetPriority == "LowestHP" then currentScore = humanoid.Health
-                        else currentScore = distFromCenter end
+                        TargetInRange = true
+                        local dist3D = (targetPos - localRoot.Position).Magnitude
+                        
+                        -- ==========================================
+                        -- 目標權重系統 (Target Weight)
+                        -- ==========================================
+                        if _G.TargetPriority == "TargetWeight" then
+                            local score = 0
+                            score = score + (2000 / math.max(distFromCenter, 1))
+                            score = score + (1000 / math.max(dist3D, 1))
+                            score = score + (500 / math.max(humanoid.Health, 1))
+                            if isPlayer then score = score + 5000 end
 
-                        if currentScore < bestScore then bestScore = currentScore; closestPart = targetPart; closestTarget = data.Model end
+                            if score > bestScore then
+                                bestScore = score
+                                closestPart = targetPart
+                                closestTarget = data.Model
+                            end
+                        else
+                            local currentScore = 0
+                            if _G.TargetPriority == "Crosshair" then currentScore = distFromCenter
+                            elseif _G.TargetPriority == "Distance" then currentScore = dist3D
+                            elseif _G.TargetPriority == "LowestHP" then currentScore = humanoid.Health
+                            else currentScore = distFromCenter end
+
+                            if currentScore < bestScore then 
+                                bestScore = currentScore
+                                closestPart = targetPart
+                                closestTarget = data.Model 
+                            end
+                        end
                     end
                 end
             end
@@ -310,6 +367,10 @@ local function GetTarget()
     if _G.TargetMode == "NPCs" or _G.TargetMode == "Both" then for _, data in pairs(NPCCache) do ProcessTarget(data, false) end end
     if _G.TargetMode == "Players" or _G.TargetMode == "Both" then for _, data in pairs(PlayerCache) do ProcessTarget(data, true) end end
 
+    if closestTarget then
+        TargetLostSightTime = 0 -- 鎖定新目標時，確保計時器歸零
+    end
+    
     TargetPart = closestPart
     return closestTarget
 end
@@ -318,7 +379,7 @@ task.spawn(function()
     while true do
         task.wait(_G.UpdateRate)
         if _G.SilentAim then CurrentTarget = GetTarget()
-        else CurrentTarget = nil; TargetInRange = false; TargetPart = nil end
+        else CurrentTarget = nil; TargetInRange = false; TargetPart = nil; TargetLostSightTime = 0 end
     end
 end)
 
@@ -366,6 +427,15 @@ local function UpdateTargetInfo()
                     table.insert(infoLines, string.format("距離: %s studs", distance))
                 end
             end
+            
+            -- 【新增】在 UI 上顯示即將丟失視野的倒數狀態
+            if TargetLostSightTime > 0 then
+                local timeLeft = _G.StickyUnlockDelay - (tick() - TargetLostSightTime)
+                if timeLeft > 0 then
+                    table.insert(infoLines, string.format("⚠️ 目標丟失: %.1f秒", timeLeft))
+                end
+            end
+
             if shouldShowHitChance then table.insert(infoLines, string.format("機率: %d%%", CalculateHitChanceDisplay())) end
             TargetInfo.Text = #infoLines > 0 and table.concat(infoLines, "\n") or "已鎖定目標"
         else TargetInfo.Visible = false; TargetInfo.Text = "" end
@@ -451,15 +521,15 @@ local function GetServerPlayerNames()
 end
 
 --// ==================================================
---// MANO GUSTAVO UI LIBRARY (全功能純淨版 + 智能白名單選單)
+--// MANO GUSTAVO UI LIBRARY (完整恢復版)
 --// ==================================================
 local Library = loadstring(game:HttpGet(
     "https://raw.githubusercontent.com/Mano-Gustavo/Mano-Gustavo-Library/refs/heads/main/library.lua"
 ))()
 
 local Window = Library:CreateWindow({
-    Title = "🎯 靜默瞄準 (霸體防亂鎖版)",
-    Author = "Silent Aim NPC",
+    Title = "🎯 靜默瞄準 (智能權重 + 霸體優化版)",
+    Author = "Silent Aim Universal",
     Keybind = Enum.KeyCode.RightControl
 })
 
@@ -483,22 +553,29 @@ TabMain:CreateToggle("啟動靜默瞄準 (Silent Aim)", function(Value)
         Library:Notification({Title = "🎯 靜默瞄準", Text = "已停用", Duration = 1.5, Type = "Error"})
     end
 end, false)
-TabMain:CreateSlider("範圍大小 (FOV)", 50, 300, 150, function(Value) _G.FOV = math.floor(Value); Circle.Radius = _G.FOV end)
+-- 【已修改】預設 115
+TabMain:CreateSlider("範圍大小 (FOV)", 50, 300, 115, function(Value) _G.FOV = math.floor(Value); Circle.Radius = _G.FOV end)
 TabMain:CreateSlider("預判強度 (Predição)", 0, 0.5, 0, function(Value) _G.Prediction = tonumber(string.format("%.3f", Value)) end) 
 TabMain:CreateSlider("命中機率 (Hit Chance)", 0, 100, 100, function(Value) _G.HitChance = math.floor(Value) end)
 TabMain:CreateSlider("更新頻率 (Taxa de Atualização)", 0, 0.5, 0.01, function(Value) _G.UpdateRate = tonumber(string.format("%.3f", Value)) end) 
 
 TabPriority:CreateLabel("=== 目標鎖定邏輯 ===")
-TabPriority:CreateDropdown("優先模式", {"Crosshair", "Distance", "LowestHP"}, function(Value)
-    _G.TargetPriority = Value; CurrentTarget = nil 
+-- 【已修改】新增 TargetWeight，並預設
+TabPriority:CreateDropdown("優先模式", {"TargetWeight", "Crosshair", "Distance", "LowestHP"}, function(Value)
+    _G.TargetPriority = Value; CurrentTarget = nil; TargetLostSightTime = 0 
     Library:Notification({Title = "模式已變更", Text = "當前優先: " .. Value, Duration = 2})
 end)
 TabPriority:CreateToggle("黏性鎖定 (Sticky Aim)", function(Value) _G.StickyAim = Value end, true)
+-- 【新增】解鎖延遲滑桿
+TabPriority:CreateSlider("霸體解鎖延遲 (秒)", 0.1, 3.0, 1.0, function(Value) 
+    _G.StickyUnlockDelay = tonumber(string.format("%.1f", Value)) 
+end)
 TabPriority:CreateLabel("----------------")
+TabPriority:CreateLabel("• TargetWeight (權重): 綜合判斷 自動選取最高威脅目標")
 TabPriority:CreateLabel("• Crosshair (準星): 鎖定最靠近畫面中心的目標")
 TabPriority:CreateLabel("• Distance (距離): 鎖定遊戲內距離你最近的目標")
-TabPriority:CreateLabel("• LowestHP (最低血量): 鎖定血量最少的目標")
-TabPriority:CreateLabel("• 黏性鎖定: 目標死亡前不會隨意切換 (無視子彈遮擋)")
+TabPriority:CreateLabel("• LowestHP (血量): 鎖定血量最少的目標")
+TabPriority:CreateLabel("• 黏性鎖定: 容許目標短暫躲在障礙物後而不掉鎖定。")
 
 TabConfig:CreateLabel("=== 一般設定 ===")
 TabConfig:CreateDropdown("瞄準對象", {"Players", "NPCs", "Both"}, function(Value) _G.TargetMode = Value end) 
@@ -510,7 +587,6 @@ TabConfig:CreateToggle("顯示目標外框", function(Value) _G.ShowTarget = Val
 TabAim:CreateLabel("=== 瞄準鏡設定 ===")
 TabAim:CreateColorPicker("FOV 圓圈顏色", Color3.fromRGB(0, 255, 0), function(Color) Circle.Color = Color end)
 
---// 白名單專區 (進化版自動選單)
 TabTeam:CreateLabel("=== 系統隊伍判定 ===")
 TabTeam:CreateToggle("檢查隊友 (玩家)", function(Value) _G.TeamCheck = Value end, true)
 TabTeam:CreateToggle("檢查隊友 (NPC)", function(Value) _G.TeamCheckForNPCs = Value end, false)
@@ -523,16 +599,14 @@ end, false)
 
 TabTeam:CreateLabel("👇 從當前伺服器中選擇玩家👇")
 
--- 建立自動獲取玩家的下拉選單
 local PlayerDropdown
 PlayerDropdown = TabTeam:CreateDropdown("選擇玩家加入白名單", GetServerPlayerNames(), function(Value)
     if Value and Value ~= "" and Value ~= "無其他玩家" then
-        -- 檢查是否已經在白名單內
         local exists = false
         for _, v in ipairs(_G.CustomWhitelist) do
             if v == Value then exists = true; break end
         end
-        
+
         if not exists then
             table.insert(_G.CustomWhitelist, Value)
             Library:Notification({Title = "🛡️ 白名單已更新", Text = "已成功加入: " .. Value, Duration = 3, Type = "Success"})
@@ -542,7 +616,6 @@ PlayerDropdown = TabTeam:CreateDropdown("選擇玩家加入白名單", GetServer
     end
 end)
 
--- 刷新按鈕：如果有新玩家加入，按這個按鈕就能更新下拉選單
 TabTeam:CreateButton("🔄 刷新伺服器玩家列表", function()
     pcall(function()
         if PlayerDropdown and PlayerDropdown.Refresh then
@@ -588,13 +661,13 @@ TabInfo:CreateToggle("顯示 血量 (HP)", function(Value) _G.ShowTargetHP = Val
 TabInfo:CreateToggle("顯示 距離", function(Value) _G.ShowTargetDistance = Value; if _G.SilentAim then UpdateTargetInfo() end end, true)
 TabInfo:CreateToggle("顯示 命中機率", function(Value) _G.ShowHitChance = Value; if _G.SilentAim then UpdateTargetInfo() end end, true)
 
-TabInfo:CreateLabel("✅ 已賦予 StickyAim 霸體機制 (無視開槍遮擋)")
-TabInfo:CreateLabel("✅ 新增：伺服器智能選單白名單！")
+TabInfo:CreateLabel("✅ 已修復牆後死鎖問題，新增計時解除機制")
+TabInfo:CreateLabel("✅ 已啟用 TargetWeight 智能鎖定")
 TabInfo:CreateButton("清除畫面 UI", function() CleanupUIOnly() end)
 
 Library:Notification({
     Title = "🎯 系統已就緒",
-    Text = "智能白名單系統已啟動！",
+    Text = "霸體計時解鎖系統已上線！",
     Duration = 4,
     Type = "Success"
 })
